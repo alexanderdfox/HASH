@@ -1,0 +1,930 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Maxwell's Demon Blockchain - Matrix</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: #000;
+            color: #00ff00;
+            font-family: 'Courier New', monospace;
+            overflow: hidden;
+            position: relative;
+        }
+
+        /* Matrix rain effect */
+        #matrix-rain {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 0;
+            pointer-events: none;
+        }
+
+        .matrix-column {
+            position: absolute;
+            top: -100%;
+            color: #00ff00;
+            font-size: 14px;
+            animation: fall linear infinite;
+            opacity: 0.7;
+        }
+
+        @keyframes fall {
+            to {
+                transform: translateY(200vh);
+            }
+        }
+
+        /* Main content */
+        .container {
+            position: relative;
+            z-index: 1;
+            padding: 20px;
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+            text-shadow: 0 0 10px #00ff00, 0 0 20px #00ff00;
+            animation: pulse 2s ease-in-out infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.7; }
+        }
+
+        @keyframes pulseNotification {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.9; transform: scale(1.05); }
+        }
+
+        @keyframes slideIn {
+            from {
+                transform: translateX(400px);
+                opacity: 0;
+            }
+            to {
+                transform: translateX(0);
+                opacity: 1;
+            }
+        }
+
+        h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+            letter-spacing: 3px;
+        }
+
+        .subtitle {
+            font-size: 1.2em;
+            color: #00cc00;
+        }
+
+        .search-panel {
+            background: rgba(0, 255, 0, 0.05);
+            border: 2px solid #00ff00;
+            padding: 20px;
+            margin-bottom: 30px;
+            box-shadow: 0 0 20px rgba(0, 255, 0, 0.3);
+        }
+
+        .search-controls {
+            display: flex;
+            gap: 15px;
+            flex-wrap: wrap;
+            margin-bottom: 15px;
+        }
+
+        .control-group {
+            flex: 1;
+            min-width: 200px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 5px;
+            color: #00cc00;
+            font-size: 0.9em;
+        }
+
+        input[type="number"] {
+            width: 100%;
+            padding: 8px;
+            background: #000;
+            border: 1px solid #00ff00;
+            color: #00ff00;
+            font-family: 'Courier New', monospace;
+            font-size: 1em;
+        }
+
+        input[type="number"]:focus {
+            outline: none;
+            box-shadow: 0 0 10px rgba(0, 255, 0, 0.5);
+        }
+
+        .search-button {
+            padding: 12px 30px;
+            background: #000;
+            border: 2px solid #00ff00;
+            color: #00ff00;
+            font-family: 'Courier New', monospace;
+            font-size: 1.1em;
+            cursor: pointer;
+            transition: all 0.3s;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+        }
+
+        .search-button:hover {
+            background: #00ff00;
+            color: #000;
+            box-shadow: 0 0 20px #00ff00;
+        }
+
+        .search-button:active {
+            transform: scale(0.95);
+        }
+
+        .status {
+            margin-top: 15px;
+            padding: 10px;
+            background: rgba(0, 255, 0, 0.1);
+            border-left: 3px solid #00ff00;
+            font-size: 0.9em;
+        }
+
+        .results {
+            margin-top: 30px;
+        }
+
+        .block-display {
+            background: rgba(0, 255, 0, 0.05);
+            border: 2px solid #00ff00;
+            padding: 25px;
+            margin-bottom: 20px;
+            box-shadow: 0 0 20px rgba(0, 255, 0, 0.3);
+            animation: fadeIn 0.5s;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .block-header {
+            font-size: 1.5em;
+            margin-bottom: 20px;
+            text-shadow: 0 0 10px #00ff00;
+            border-bottom: 1px solid #00ff00;
+            padding-bottom: 10px;
+        }
+
+        .block-info {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+
+        .info-item {
+            font-size: 0.9em;
+        }
+
+        .info-label {
+            color: #00cc00;
+            margin-bottom: 5px;
+        }
+
+        .info-value {
+            color: #00ff00;
+            word-break: break-all;
+        }
+
+        .metrics {
+            margin-top: 20px;
+        }
+
+        .metric {
+            margin-bottom: 15px;
+        }
+
+        .metric-label {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 5px;
+            font-size: 0.9em;
+        }
+
+        .metric-name {
+            color: #00cc00;
+        }
+
+        .metric-value {
+            color: #00ff00;
+            font-weight: bold;
+        }
+
+        .metric-bar-container {
+            height: 25px;
+            background: rgba(0, 255, 0, 0.1);
+            border: 1px solid #00ff00;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .metric-bar {
+            height: 100%;
+            background: linear-gradient(90deg, #00ff00, #00cc00);
+            box-shadow: 0 0 10px rgba(0, 255, 0, 0.5);
+            transition: width 0.5s ease;
+            display: flex;
+            align-items: center;
+            padding-left: 10px;
+            color: #000;
+            font-weight: bold;
+            font-size: 0.8em;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 20px;
+            font-size: 1.2em;
+            color: #00ff00;
+            animation: blink 1s infinite;
+        }
+
+        @keyframes blink {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.3; }
+        }
+
+        .hash-display {
+            font-family: 'Courier New', monospace;
+            font-size: 0.85em;
+            letter-spacing: 1px;
+            word-break: break-all;
+            background: rgba(0, 0, 0, 0.5);
+            padding: 10px;
+            border: 1px solid #00ff00;
+            margin-top: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div id="matrix-rain"></div>
+    
+    <div class="container">
+        <div class="header">
+            <h1>MAXWELL'S DEMON</h1>
+            <div class="subtitle">PALINDROMIC BLOCKCHAIN ANALYZER</div>
+        </div>
+
+        <div class="search-panel">
+            <div class="search-controls">
+                <div class="control-group">
+                    <label>Target Symmetry:</label>
+                    <input type="number" id="target-symmetry" value="1" min="0" max="1" step="0.01">
+                </div>
+                <div class="control-group">
+                    <label>Target Efficiency:</label>
+                    <input type="number" id="target-efficiency" value="1" min="0" max="1" step="0.01">
+                </div>
+                <div class="control-group">
+                    <label>Target Disorder Level:</label>
+                    <input type="number" id="target-disorder" value="1" min="0" max="1" step="0.01">
+                </div>
+                <div class="control-group">
+                    <label>Target Order Extracted:</label>
+                    <input type="number" id="target-order" value="1" min="0" max="1" step="0.01">
+                </div>
+            </div>
+            <button class="search-button" id="search-button" onclick="startSearch()">INITIATE SEARCH</button>
+            <button class="search-button" id="stop-button" onclick="stopSearch()" style="display: none; margin-left: 10px; background: #ff0000; border-color: #ff0000;">STOP SEARCH</button>
+            <div class="status" id="status">Ready to search...</div>
+            <div class="status" id="system-status" style="margin-top: 10px; font-size: 0.85em; opacity: 0.8;">
+                System Status: Initializing...
+            </div>
+        </div>
+
+        <div class="results" id="results"></div>
+    </div>
+
+    <script>
+        // GPU and Security Enclave initialization
+        let gpuDevice = null;
+        let gpuQueue = null;
+        let gpuComputePipeline = null;
+        let secureContext = null;
+        let gpuEnabled = false;
+
+        // Initialize WebGPU
+        async function initGPU() {
+            if (!navigator.gpu) {
+                console.warn('WebGPU not supported, falling back to CPU');
+                return false;
+            }
+
+            try {
+                const adapter = await navigator.gpu.requestAdapter();
+                if (!adapter) {
+                    console.warn('No GPU adapter found');
+                    return false;
+                }
+
+                gpuDevice = await adapter.requestDevice();
+                gpuQueue = gpuDevice.queue;
+
+                // Create compute shader for parallel hash computation
+                const computeShaderCode = `
+                    @group(0) @binding(0) var<storage, read_write> seeds: array<u32>;
+                    @group(0) @binding(1) var<storage, read_write> results: array<u32>;
+                    
+                    @compute @workgroup_size(64)
+                    fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
+                        let index = global_id.x;
+                        if (index >= arrayLength(&seeds)) {
+                            return;
+                        }
+                        
+                        // Simple hash computation (simplified for GPU)
+                        var hash: u32 = seeds[index];
+                        hash = hash ^ (hash << 13u);
+                        hash = hash ^ (hash >> 7u);
+                        hash = hash ^ (hash << 17u);
+                        results[index] = hash;
+                    }
+                `;
+
+                const computeModule = gpuDevice.createShaderModule({
+                    code: computeShaderCode
+                });
+
+                gpuComputePipeline = gpuDevice.createComputePipeline({
+                    layout: 'auto',
+                    compute: {
+                        module: computeModule,
+                        entryPoint: 'main'
+                    }
+                });
+
+                gpuEnabled = true;
+                console.log('GPU initialized successfully');
+                return true;
+            } catch (error) {
+                console.warn('GPU initialization failed:', error);
+                return false;
+            }
+        }
+
+        // Initialize Security Enclave (Web Crypto API with secure context)
+        async function initSecurityEnclave() {
+            try {
+                // Check if we're in a secure context
+                if (!window.isSecureContext) {
+                    console.warn('Not in secure context, some security features may be limited');
+                    return false;
+                }
+
+                // Verify Web Crypto API availability
+                if (!crypto || !crypto.subtle) {
+                    console.warn('Web Crypto API not available');
+                    return false;
+                }
+
+                // Generate a secure key for enclave operations
+                const keyMaterial = await crypto.subtle.generateKey(
+                    {
+                        name: 'AES-GCM',
+                        length: 256
+                    },
+                    true, // extractable
+                    ['encrypt', 'decrypt']
+                );
+
+                secureContext = {
+                    key: keyMaterial,
+                    initialized: true,
+                    secureMemory: new Map() // Secure memory store
+                };
+
+                console.log('Security Enclave initialized');
+                return true;
+            } catch (error) {
+                console.warn('Security Enclave initialization failed:', error);
+                return false;
+            }
+        }
+
+        // Secure hash computation using enclave
+        async function secureHash(data) {
+            if (!secureContext || !secureContext.initialized) {
+                // Fallback to regular hash
+                return await sha256Hash(data);
+            }
+
+            try {
+                // Encrypt data in secure context before hashing
+                const encoder = new TextEncoder();
+                const dataBuffer = encoder.encode(data);
+                
+                // Use secure random IV
+                const iv = crypto.getRandomValues(new Uint8Array(12));
+                
+                // Encrypt in secure context
+                const encrypted = await crypto.subtle.encrypt(
+                    {
+                        name: 'AES-GCM',
+                        iv: iv
+                    },
+                    secureContext.key,
+                    dataBuffer
+                );
+
+                // Hash the encrypted data
+                const hashBuffer = await crypto.subtle.digest('SHA-256', encrypted);
+                const hashArray = Array.from(new Uint8Array(hashBuffer));
+                return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+            } catch (error) {
+                console.warn('Secure hash failed, using fallback:', error);
+                return await sha256Hash(data);
+            }
+        }
+
+        // GPU-accelerated batch hash computation
+        async function gpuBatchHash(seeds) {
+            if (!gpuEnabled || !gpuDevice) {
+                // Fallback to CPU
+                const results = [];
+                for (const seed of seeds) {
+                    results.push(await sha256Hash(seed));
+                }
+                return results;
+            }
+
+            try {
+                const batchSize = seeds.length;
+                const seedData = new Uint32Array(batchSize);
+                
+                // Convert seeds to numeric values
+                for (let i = 0; i < batchSize; i++) {
+                    seedData[i] = hashString(seeds[i]);
+                }
+
+                const resultData = new Uint32Array(batchSize);
+
+                // Create GPU buffers
+                const seedBuffer = gpuDevice.createBuffer({
+                    size: seedData.byteLength,
+                    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST
+                });
+
+                const resultBuffer = gpuDevice.createBuffer({
+                    size: resultData.byteLength,
+                    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC
+                });
+
+                // Upload data
+                gpuQueue.writeBuffer(seedBuffer, 0, seedData);
+                gpuQueue.writeBuffer(resultBuffer, 0, resultData);
+
+                // Create bind group
+                const bindGroup = gpuDevice.createBindGroup({
+                    layout: gpuComputePipeline.getBindGroupLayout(0),
+                    entries: [
+                        { binding: 0, resource: { buffer: seedBuffer } },
+                        { binding: 1, resource: { buffer: resultBuffer } }
+                    ]
+                });
+
+                // Dispatch compute shader
+                const commandEncoder = gpuDevice.createCommandEncoder();
+                const passEncoder = commandEncoder.beginComputePass();
+                passEncoder.setPipeline(gpuComputePipeline);
+                passEncoder.setBindGroup(0, bindGroup);
+                passEncoder.dispatchWorkgroups(Math.ceil(batchSize / 64));
+                passEncoder.end();
+
+                // Read results
+                const readBuffer = gpuDevice.createBuffer({
+                    size: resultData.byteLength,
+                    usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ
+                });
+
+                commandEncoder.copyBufferToBuffer(
+                    resultBuffer, 0,
+                    readBuffer, 0,
+                    resultData.byteLength
+                );
+
+                gpuQueue.submit([commandEncoder.finish()]);
+
+                await readBuffer.mapAsync(GPUMapMode.READ);
+                const mappedData = new Uint32Array(readBuffer.getMappedRange());
+                
+                // Convert back to hex strings
+                const results = [];
+                for (let i = 0; i < batchSize; i++) {
+                    // Use GPU result as seed for full hash
+                    const fullSeed = seeds[i] + '-' + mappedData[i].toString(16);
+                    results.push(await sha256Hash(fullSeed));
+                }
+
+                readBuffer.unmap();
+                seedBuffer.destroy();
+                resultBuffer.destroy();
+                readBuffer.destroy();
+
+                return results;
+            } catch (error) {
+                console.warn('GPU batch hash failed, using CPU fallback:', error);
+                const results = [];
+                for (const seed of seeds) {
+                    results.push(await sha256Hash(seed));
+                }
+                return results;
+            }
+        }
+
+        // Helper function to hash string to number
+        function hashString(str) {
+            let hash = 0;
+            for (let i = 0; i < str.length; i++) {
+                const char = str.charCodeAt(i);
+                hash = ((hash << 5) - hash) + char;
+                hash = hash & hash; // Convert to 32-bit integer
+            }
+            return Math.abs(hash);
+        }
+
+        // Matrix rain effect
+        function createMatrixRain() {
+            const matrix = document.getElementById('matrix-rain');
+            const chars = '01アイウエオカキクケコサシスセソタチツテトナニヌネノハヒフヘホマミムメモヤユヨラリルレロワヲン';
+            const columns = Math.floor(window.innerWidth / 20);
+            
+            for (let i = 0; i < columns; i++) {
+                const column = document.createElement('div');
+                column.className = 'matrix-column';
+                column.style.left = (i * 20) + 'px';
+                column.style.animationDuration = (Math.random() * 3 + 2) + 's';
+                column.style.animationDelay = Math.random() * 2 + 's';
+                
+                let text = '';
+                for (let j = 0; j < 50; j++) {
+                    text += chars[Math.floor(Math.random() * chars.length)] + '<br>';
+                }
+                column.innerHTML = text;
+                
+                matrix.appendChild(column);
+            }
+        }
+
+        // Hash functions (from Python code)
+        async function sha256Hash(data) {
+            const encoder = new TextEncoder();
+            const dataBuffer = encoder.encode(data);
+            const hashBuffer = await crypto.subtle.digest('SHA-256', dataBuffer);
+            const hashArray = Array.from(new Uint8Array(hashBuffer));
+            return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+        }
+
+        function palindromicHash(hexHash) {
+            const half = hexHash.substring(0, Math.floor(hexHash.length / 2));
+            return half + half.split('').reverse().join('');
+        }
+
+        function shannonEntropy(s) {
+            const counts = {};
+            for (let char of s) {
+                counts[char] = (counts[char] || 0) + 1;
+            }
+            
+            let entropy = 0;
+            const total = s.length;
+            for (let count of Object.values(counts)) {
+                const p = count / total;
+                entropy -= p * Math.log2(p);
+            }
+            return entropy;
+        }
+
+        function idealEntropy(s) {
+            const alphabet = new Set(s).size;
+            if (alphabet <= 1) return 0;
+            return Math.log2(alphabet);
+        }
+
+        function symmetryScore(s) {
+            let matches = 0;
+            const half = Math.floor(s.length / 2);
+            for (let i = 0; i < half; i++) {
+                if (s[i] === s[s.length - 1 - i]) {
+                    matches++;
+                }
+            }
+            return matches / half;
+        }
+
+        function demonEntropyMeter(s) {
+            const H_real = shannonEntropy(s);
+            const H_ideal = idealEntropy(s);
+            const symmetry = symmetryScore(s);
+            
+            const entropy_saved = Math.max(0, H_ideal - H_real);
+            const efficiency = H_ideal > 0 ? entropy_saved / H_ideal : 0;
+            
+            const disorder_ratio = H_ideal > 0 ? H_real / H_ideal : 0;
+            const order_extracted = 1 - disorder_ratio;
+            
+            return {
+                real_entropy: H_real,
+                ideal_entropy: H_ideal,
+                entropy_saved: entropy_saved,
+                symmetry_score: symmetry,
+                demon_efficiency: efficiency,
+                disorder_level: disorder_ratio,
+                order_extracted: order_extracted
+            };
+        }
+
+        function calculateDistance(stats, targets) {
+            const symDiff = Math.abs(stats.symmetry_score - targets.symmetry);
+            const effDiff = Math.abs(stats.demon_efficiency - targets.efficiency);
+            const disDiff = Math.abs(stats.disorder_level - targets.disorder);
+            const ordDiff = Math.abs(stats.order_extracted - targets.order);
+            return symDiff + effDiff + disDiff + ordDiff;
+        }
+
+        let currentSearchInterval = null;
+        let lastAlertDistance = Infinity;
+        let matchCount = 0;
+        const ALERT_THRESHOLD = 0.01; // Alert when distance is below this
+
+        function stopSearch() {
+            if (currentSearchInterval) {
+                clearInterval(currentSearchInterval);
+                currentSearchInterval = null;
+                document.getElementById('status').textContent = 'Search stopped by user.';
+                document.getElementById('search-button').style.display = 'inline-block';
+                document.getElementById('stop-button').style.display = 'none';
+            }
+        }
+
+        function showMatchAlert(distance, stats, iteration) {
+            // Show browser alert
+            alert(`🎯 MATCH FOUND! (Match #${matchCount})\n\n` +
+                  `Iteration: ${iteration.toLocaleString()}\n` +
+                  `Distance: ${distance.toFixed(6)}\n\n` +
+                  `Symmetry: ${stats.symmetry_score.toFixed(6)}\n` +
+                  `Efficiency: ${stats.demon_efficiency.toFixed(6)}\n` +
+                  `Disorder: ${stats.disorder_level.toFixed(6)}\n` +
+                  `Order: ${stats.order_extracted.toFixed(6)}\n\n` +
+                  `Search will continue...`);
+            
+            // Also show visual notification
+            const notification = document.createElement('div');
+            notification.style.cssText = `
+                position: fixed;
+                top: 20px;
+                right: 20px;
+                background: rgba(0, 255, 0, 0.9);
+                color: #000;
+                padding: 20px;
+                border: 3px solid #00ff00;
+                border-radius: 5px;
+                z-index: 10000;
+                font-family: 'Courier New', monospace;
+                font-weight: bold;
+                box-shadow: 0 0 30px rgba(0, 255, 0, 0.8);
+                animation: slideIn 0.5s ease-out, pulseNotification 2s infinite 0.5s;
+                max-width: 300px;
+            `;
+            notification.innerHTML = `
+                <div style="font-size: 1.2em; margin-bottom: 10px;">🎯 MATCH #${matchCount} FOUND!</div>
+                <div>Distance: ${distance.toFixed(6)}</div>
+                <div>Iteration: ${iteration.toLocaleString()}</div>
+            `;
+            document.body.appendChild(notification);
+            
+            // Remove notification after 5 seconds
+            setTimeout(() => {
+                if (notification.parentNode) {
+                    notification.parentNode.removeChild(notification);
+                }
+            }, 5000);
+        }
+
+        async function startSearch() {
+            const resultsDiv = document.getElementById('results');
+            const statusDiv = document.getElementById('status');
+            
+            // Initialize GPU and Security Enclave if not already done
+            if (!gpuEnabled) {
+                statusDiv.textContent = 'Initializing GPU and Security Enclave...';
+                await initGPU();
+                await initSecurityEnclave();
+            }
+            
+            const targets = {
+                symmetry: parseFloat(document.getElementById('target-symmetry').value),
+                efficiency: parseFloat(document.getElementById('target-efficiency').value),
+                disorder: parseFloat(document.getElementById('target-disorder').value),
+                order: parseFloat(document.getElementById('target-order').value)
+            };
+
+            // Stop any existing search
+            if (currentSearchInterval) {
+                clearInterval(currentSearchInterval);
+            }
+
+            // Update UI
+            document.getElementById('search-button').style.display = 'none';
+            document.getElementById('stop-button').style.display = 'inline-block';
+            resultsDiv.innerHTML = '<div class="loading">SEARCHING... SCANNING HASH SPACE...</div>';
+            statusDiv.textContent = `Searching for optimal hash... [GPU: ${gpuEnabled ? 'ENABLED' : 'CPU FALLBACK'}] [Enclave: ${secureContext?.initialized ? 'ACTIVE' : 'INACTIVE'}]`;
+
+            let bestHash = null;
+            let bestDistance = Infinity;
+            let bestStats = null;
+            let iterations = 0;
+            lastAlertDistance = Infinity; // Reset alert threshold
+            matchCount = 0; // Reset match counter
+            const batchSize = gpuEnabled ? 64 : 1; // Use batches if GPU is available
+            let seedBatch = [];
+
+            currentSearchInterval = setInterval(async () => {
+                // Check if search was stopped
+                if (!currentSearchInterval) {
+                    return;
+                }
+                iterations++;
+                
+                // Generate random seed
+                const seed = `SEED-${Date.now()}-${Math.random()}-${iterations}`;
+                seedBatch.push(seed);
+                
+                // Process in batches if GPU is enabled
+                if (gpuEnabled && seedBatch.length >= batchSize) {
+                    const hashes = await gpuBatchHash(seedBatch);
+                    seedBatch = [];
+                    
+                    for (const hash of hashes) {
+                        const palHash = palindromicHash(hash);
+                        const stats = demonEntropyMeter(palHash);
+                        const distance = calculateDistance(stats, targets);
+                        
+                        if (distance < bestDistance) {
+                            bestDistance = distance;
+                            bestHash = palHash;
+                            bestStats = stats;
+                            
+                            statusDiv.textContent = `Iteration ${iterations.toLocaleString()} | Best distance: ${bestDistance.toFixed(6)} | Matches: ${matchCount} [GPU ACCELERATED]`;
+                            
+                            displayBlock({
+                                seed: seed,
+                                pal_hash: bestHash,
+                                ...bestStats
+                            }, iterations);
+
+                            // Alert if we found a good match (and haven't alerted for this distance yet)
+                            if (bestDistance < ALERT_THRESHOLD && bestDistance < lastAlertDistance) {
+                                matchCount++;
+                                showMatchAlert(bestDistance, bestStats, iterations);
+                                lastAlertDistance = bestDistance;
+                            }
+                        }
+                    }
+                } else {
+                    // Single hash computation (CPU or waiting for batch)
+                    const hash = await secureHash(seed);
+                    const palHash = palindromicHash(hash);
+                    const stats = demonEntropyMeter(palHash);
+                    const distance = calculateDistance(stats, targets);
+                    
+                    if (distance < bestDistance) {
+                        bestDistance = distance;
+                        bestHash = palHash;
+                        bestStats = stats;
+                        
+                        const mode = secureContext?.initialized ? '[SECURE ENCLAVE]' : '';
+                        statusDiv.textContent = `Iteration ${iterations.toLocaleString()} | Best distance: ${bestDistance.toFixed(6)} | Matches: ${matchCount} ${mode}`;
+                        
+                        displayBlock({
+                            seed: seed,
+                            pal_hash: bestHash,
+                            ...bestStats
+                        }, iterations);
+
+                        // Alert if we found a good match (and haven't alerted for this distance yet)
+                        if (bestDistance < ALERT_THRESHOLD && bestDistance < lastAlertDistance) {
+                            matchCount++;
+                            showMatchAlert(bestDistance, bestStats, iterations);
+                            lastAlertDistance = bestDistance;
+                        }
+                    }
+                }
+                
+                // Continue forever - no stopping conditions
+                // Search will continue until manually stopped
+            }, gpuEnabled ? 1 : 10); // Faster with GPU
+        }
+
+        function displayBlock(block, iteration) {
+            const resultsDiv = document.getElementById('results');
+            
+            const blockHtml = `
+                <div class="block-display">
+                    <div class="block-header">BLOCK #${iteration}</div>
+                    <div class="block-info">
+                        <div class="info-item">
+                            <div class="info-label">Seed:</div>
+                            <div class="info-value">${block.seed.substring(0, 60)}...</div>
+                        </div>
+                        <div class="info-item">
+                            <div class="info-label">Real Entropy:</div>
+                            <div class="info-value">${block.real_entropy.toFixed(4)}</div>
+                        </div>
+                        <div class="info-item">
+                            <div class="info-label">Ideal Entropy:</div>
+                            <div class="info-value">${block.ideal_entropy.toFixed(4)}</div>
+                        </div>
+                    </div>
+                    <div class="hash-display">${block.pal_hash}</div>
+                    <div class="metrics">
+                        <div class="metric">
+                            <div class="metric-label">
+                                <span class="metric-name">Symmetry Score</span>
+                                <span class="metric-value">${block.symmetry_score.toFixed(6)}</span>
+                            </div>
+                            <div class="metric-bar-container">
+                                <div class="metric-bar" style="width: ${block.symmetry_score * 100}%">${(block.symmetry_score * 100).toFixed(2)}%</div>
+                            </div>
+                        </div>
+                        <div class="metric">
+                            <div class="metric-label">
+                                <span class="metric-name">Demon Efficiency</span>
+                                <span class="metric-value">${block.demon_efficiency.toFixed(6)}</span>
+                            </div>
+                            <div class="metric-bar-container">
+                                <div class="metric-bar" style="width: ${block.demon_efficiency * 100}%">${(block.demon_efficiency * 100).toFixed(2)}%</div>
+                            </div>
+                        </div>
+                        <div class="metric">
+                            <div class="metric-label">
+                                <span class="metric-name">Disorder Level</span>
+                                <span class="metric-value">${block.disorder_level.toFixed(6)}</span>
+                            </div>
+                            <div class="metric-bar-container">
+                                <div class="metric-bar" style="width: ${block.disorder_level * 100}%">${(block.disorder_level * 100).toFixed(2)}%</div>
+                            </div>
+                        </div>
+                        <div class="metric">
+                            <div class="metric-label">
+                                <span class="metric-name">Order Extracted</span>
+                                <span class="metric-value">${block.order_extracted.toFixed(6)}</span>
+                            </div>
+                            <div class="metric-bar-container">
+                                <div class="metric-bar" style="width: ${block.order_extracted * 100}%">${(block.order_extracted * 100).toFixed(2)}%</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+            
+            resultsDiv.innerHTML = blockHtml;
+        }
+
+        // Initialize
+        (async () => {
+            createMatrixRain();
+            const statusDiv = document.getElementById('system-status');
+            statusDiv.textContent = 'System Status: Initializing GPU...';
+            
+            const gpuInit = await initGPU();
+            statusDiv.textContent = `System Status: GPU ${gpuInit ? 'ENABLED' : 'CPU FALLBACK'} | Initializing Enclave...`;
+            
+            const enclaveInit = await initSecurityEnclave();
+            const finalStatus = `System Status: GPU ${gpuInit ? 'ENABLED' : 'DISABLED'} | Enclave ${enclaveInit ? 'ACTIVE' : 'INACTIVE'}`;
+            statusDiv.textContent = finalStatus;
+            
+            console.log('System initialized:', {
+                gpu: gpuEnabled,
+                enclave: secureContext?.initialized || false
+            });
+        })();
+    </script>
+</body>
+</html>

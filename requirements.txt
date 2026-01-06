@@ -1,0 +1,11 @@
+# Core dependencies (required)
+# No core dependencies - uses standard library only
+
+# Optional dependencies for GPU acceleration
+# Install with: pip install torch
+torch>=2.0.0
+
+# Optional dependencies for enhanced GPU support
+# Install with: pip install cupy-cuda11x (adjust for your CUDA version)
+# cupy>=12.0.0
+
