@@ -3,8 +3,10 @@ import time
 import math
 import os
 import secrets
+import threading
 from collections import Counter
 from dataclasses import dataclass, asdict
+from queue import Queue
 
 # GPU acceleration imports
 try:
@@ -318,11 +320,84 @@ def gpu_shannon_entropy_batch(strings: list) -> list:
 
 
 # -----------------------------
+# Thread worker function for parallel search
+# -----------------------------
+def search_worker(worker_id, targets, result_queue, stop_event, use_enclave=False, 
+                 start_iter=0, end_iter=1000000):
+	"""Worker thread that searches a range of iterations"""
+	best_hash = None
+	best_seed = None
+	best_distance = float('inf')
+	best_stats = None
+	
+	for i in range(start_iter, end_iter):
+		if stop_event.is_set():
+			break
+		
+		# Generate seed with secure random if using enclave
+		if use_enclave:
+			secure_random = security_enclave.secure_random(16).hex()
+			seed = f"SEARCH-{worker_id}-{i}-{time.time_ns()}-{secure_random}"
+		else:
+			seed = f"SEARCH-{worker_id}-{i}-{time.time_ns()}-{hash(str(i))}"
+		
+		pal = palindromic_hash(seed, use_enclave=use_enclave)
+		stats = demon_entropy_meter(pal)
+		
+		disorder_ratio = (
+			stats["real_entropy"] / stats["ideal_entropy"]
+			if stats["ideal_entropy"] > 0 else 0
+		)
+		order_extracted = 1 - disorder_ratio
+		
+		# Calculate distance from targets
+		sym_diff = abs(stats["symmetry_score"] - targets["symmetry"])
+		eff_diff = abs(stats["demon_efficiency"] - targets["efficiency"])
+		dis_diff = abs(disorder_ratio - targets["disorder"])
+		ord_diff = abs(order_extracted - targets["order"])
+		
+		total_distance = sym_diff + eff_diff + dis_diff + ord_diff
+		
+		if total_distance < best_distance:
+			best_distance = total_distance
+			best_hash = pal
+			best_seed = seed
+			best_stats = {
+				"symmetry": stats["symmetry_score"],
+				"efficiency": stats["demon_efficiency"],
+				"disorder": disorder_ratio,
+				"order": order_extracted,
+				"real_entropy": stats["real_entropy"],
+				"ideal_entropy": stats["ideal_entropy"]
+			}
+			
+			# Send result to main thread
+			result_queue.put({
+				"worker_id": worker_id,
+				"iteration": i,
+				"distance": best_distance,
+				"hash": best_hash,
+				"seed": best_seed,
+				"stats": best_stats
+			})
+	
+	# Send final result
+	result_queue.put({
+		"worker_id": worker_id,
+		"done": True,
+		"best_distance": best_distance,
+		"best_hash": best_hash,
+		"best_seed": best_seed,
+		"best_stats": best_stats
+	})
+
+
+# -----------------------------
 # Hash search function
 # -----------------------------
 def search_hash(target_symmetry=1.0, target_efficiency=1.0, 
                 target_disorder=1.0, target_order=1.0, max_iterations=1000000,
-                use_gpu=True, use_enclave=False):
+                use_gpu=True, use_enclave=False, num_threads=None):
 	"""
 	Search for a hash that matches the target criteria as closely as possible.
 	Note: Having all values = 1 simultaneously is mathematically impossible,
@@ -331,17 +406,24 @@ def search_hash(target_symmetry=1.0, target_efficiency=1.0,
 	Args:
 		use_gpu: Use GPU acceleration if available
 		use_enclave: Use security enclave for secure hashing
+		num_threads: Number of threads to use (None = auto-detect CPU cores)
 	"""
 	best_hash = None
 	best_seed = None
 	best_distance = float('inf')
 	best_stats = None
 	
+	# Auto-detect number of threads
+	if num_threads is None:
+		num_threads = os.cpu_count() or 4
+	
 	mode_str = []
 	if use_gpu and GPU_AVAILABLE:
 		mode_str.append("GPU")
 	if use_enclave:
 		mode_str.append("ENCLAVE")
+	if num_threads > 1:
+		mode_str.append(f"{num_threads} THREADS")
 	mode_str = " | ".join(mode_str) if mode_str else "CPU"
 	
 	print("\n=== SEARCHING FOR OPTIMAL HASH ===")
@@ -350,25 +432,136 @@ def search_hash(target_symmetry=1.0, target_efficiency=1.0,
 	      f"disorder={target_disorder}, order={target_order}")
 	print("Searching...\n")
 	
-	batch_size = 64 if (use_gpu and GPU_AVAILABLE) else 1
-	seed_batch = []
-	
-	for i in range(max_iterations):
-		# Generate seed with secure random if using enclave
-		if use_enclave:
-			secure_random = security_enclave.secure_random(16).hex()
-			seed = f"SEARCH-{i}-{time.time_ns()}-{secure_random}"
-		else:
-			seed = f"SEARCH-{i}-{time.time_ns()}-{hash(str(i))}"
+	# Use multi-threading if requested
+	if num_threads > 1 and not (use_gpu and GPU_AVAILABLE):
+		# Multi-threaded search
+		targets = {
+			"symmetry": target_symmetry,
+			"efficiency": target_efficiency,
+			"disorder": target_disorder,
+			"order": target_order
+		}
 		
-		seed_batch.append(seed)
+		result_queue = Queue()
+		stop_event = threading.Event()
+		threads = []
 		
-		# Process in batches if GPU is enabled
-		if len(seed_batch) >= batch_size or i == max_iterations - 1:
-			if use_gpu and GPU_AVAILABLE and len(seed_batch) > 1:
-				# Batch processing
-				hashes = gpu_batch_hash(seed_batch, use_enclave)
-				for seed, h in zip(seed_batch, hashes):
+		# Distribute iterations across threads
+		iterations_per_thread = max_iterations // num_threads
+		
+		for i in range(num_threads):
+			start = i * iterations_per_thread
+			end = (i + 1) * iterations_per_thread if i < num_threads - 1 else max_iterations
+			
+			thread = threading.Thread(
+				target=search_worker,
+				args=(i, targets, result_queue, stop_event, use_enclave, start, end)
+			)
+			thread.daemon = True
+			thread.start()
+			threads.append(thread)
+		
+		# Collect results
+		completed_threads = 0
+		last_report = 0
+		
+		while completed_threads < num_threads:
+			try:
+				result = result_queue.get(timeout=1)
+				
+				if result.get("done"):
+					completed_threads += 1
+					if result["best_distance"] < best_distance:
+						best_distance = result["best_distance"]
+						best_hash = result["best_hash"]
+						best_seed = result["best_seed"]
+						best_stats = result["best_stats"]
+				else:
+					# Update best if better result found
+					if result["distance"] < best_distance:
+						best_distance = result["distance"]
+						best_hash = result["hash"]
+						best_seed = result["seed"]
+						best_stats = result["stats"]
+						
+						# Progress reporting - always print closest match
+						iteration = result["iteration"]
+						if iteration - last_report >= 10000 or best_distance < 0.01:
+							print(f"\n🎯 CLOSEST MATCH YET (Iteration {iteration:,}):")
+							print(f"   Distance: {best_distance:.10f}")
+							print(f"   Symmetry: {best_stats['symmetry']:.10f} (target: {target_symmetry})")
+							print(f"   Efficiency: {best_stats['efficiency']:.10f} (target: {target_efficiency})")
+							print(f"   Disorder: {best_stats['disorder']:.10f} (target: {target_disorder})")
+							print(f"   Order: {best_stats['order']:.10f} (target: {target_order})")
+							print(f"   Hash: {best_hash}")
+							print(f"   Seed: {best_seed[:60]}...")
+							print(f"   [{mode_str}]\n")
+							last_report = iteration
+							last_report = iteration
+					
+					# Check for perfect match
+					if best_distance < 0.0001:
+						stop_event.set()
+						print("PERFECT MATCH FOUND!")
+						break
+			except:
+				continue
+		
+		# Wait for all threads to finish
+		for thread in threads:
+			thread.join(timeout=1)
+	else:
+		# Single-threaded search (original code)
+		batch_size = 64 if (use_gpu and GPU_AVAILABLE) else 1
+		seed_batch = []
+		
+		for i in range(max_iterations):
+			# Generate seed with secure random if using enclave
+			if use_enclave:
+				secure_random = security_enclave.secure_random(16).hex()
+				seed = f"SEARCH-{i}-{time.time_ns()}-{secure_random}"
+			else:
+				seed = f"SEARCH-{i}-{time.time_ns()}-{hash(str(i))}"
+			
+			seed_batch.append(seed)
+			
+			# Process in batches if GPU is enabled
+			if len(seed_batch) >= batch_size or i == max_iterations - 1:
+				if use_gpu and GPU_AVAILABLE and len(seed_batch) > 1:
+					# Batch processing
+					hashes = gpu_batch_hash(seed_batch, use_enclave)
+					for seed, h in zip(seed_batch, hashes):
+						pal = palindromic_hash(seed, use_enclave=use_enclave)
+						stats = demon_entropy_meter(pal)
+						
+						disorder_ratio = (
+							stats["real_entropy"] / stats["ideal_entropy"]
+							if stats["ideal_entropy"] > 0 else 0
+						)
+						order_extracted = 1 - disorder_ratio
+						
+						# Calculate distance from targets
+						sym_diff = abs(stats["symmetry_score"] - target_symmetry)
+						eff_diff = abs(stats["demon_efficiency"] - target_efficiency)
+						dis_diff = abs(disorder_ratio - target_disorder)
+						ord_diff = abs(order_extracted - target_order)
+						
+						total_distance = sym_diff + eff_diff + dis_diff + ord_diff
+						
+						if total_distance < best_distance:
+							best_distance = total_distance
+							best_hash = pal
+							best_seed = seed
+							best_stats = {
+								"symmetry": stats["symmetry_score"],
+								"efficiency": stats["demon_efficiency"],
+								"disorder": disorder_ratio,
+								"order": order_extracted,
+								"real_entropy": stats["real_entropy"],
+								"ideal_entropy": stats["ideal_entropy"]
+							}
+				else:
+					# Single processing
 					pal = palindromic_hash(seed, use_enclave=use_enclave)
 					stats = demon_entropy_meter(pal)
 					
@@ -398,53 +591,25 @@ def search_hash(target_symmetry=1.0, target_efficiency=1.0,
 							"real_entropy": stats["real_entropy"],
 							"ideal_entropy": stats["ideal_entropy"]
 						}
-			else:
-				# Single processing
-				pal = palindromic_hash(seed, use_enclave=use_enclave)
-				stats = demon_entropy_meter(pal)
 				
-				disorder_ratio = (
-					stats["real_entropy"] / stats["ideal_entropy"]
-					if stats["ideal_entropy"] > 0 else 0
-				)
-				order_extracted = 1 - disorder_ratio
+				seed_batch = []
 				
-				# Calculate distance from targets
-				sym_diff = abs(stats["symmetry_score"] - target_symmetry)
-				eff_diff = abs(stats["demon_efficiency"] - target_efficiency)
-				dis_diff = abs(disorder_ratio - target_disorder)
-				ord_diff = abs(order_extracted - target_order)
-				
-				total_distance = sym_diff + eff_diff + dis_diff + ord_diff
-				
-				if total_distance < best_distance:
-					best_distance = total_distance
-					best_hash = pal
-					best_seed = seed
-					best_stats = {
-						"symmetry": stats["symmetry_score"],
-						"efficiency": stats["demon_efficiency"],
-						"disorder": disorder_ratio,
-						"order": order_extracted,
-						"real_entropy": stats["real_entropy"],
-						"ideal_entropy": stats["ideal_entropy"]
-					}
+				# Progress reporting - always print closest match
+				if i % 10000 == 0 or (best_stats and best_distance < 0.01):
+					print(f"\n🎯 CLOSEST MATCH YET (Iteration {i:,}):")
+					print(f"   Distance: {best_distance:.10f}")
+					if best_stats:
+						print(f"   Symmetry: {best_stats['symmetry']:.10f} (target: {target_symmetry})")
+						print(f"   Efficiency: {best_stats['efficiency']:.10f} (target: {target_efficiency})")
+						print(f"   Disorder: {best_stats['disorder']:.10f} (target: {target_disorder})")
+						print(f"   Order: {best_stats['order']:.10f} (target: {target_order})")
+						print(f"   Hash: {best_hash}")
+						print(f"   Seed: {best_seed[:60]}...")
+						print(f"   [{mode_str}]\n")
 			
-			seed_batch = []
-			
-			# Progress reporting
-			if i % 10000 == 0 or (best_stats and best_distance < 0.01):
-				print(f"Iteration {i:,} | Distance: {best_distance:.6f} [{mode_str}]")
-				if best_stats:
-					print(f"  Symmetry: {best_stats['symmetry']:.6f} (target: {target_symmetry})")
-					print(f"  Efficiency: {best_stats['efficiency']:.6f} (target: {target_efficiency})")
-					print(f"  Disorder: {best_stats['disorder']:.6f} (target: {target_disorder})")
-					print(f"  Order: {best_stats['order']:.6f} (target: {target_order})")
-					print()
-		
-		if best_stats and best_distance < 0.0001:
-			print("PERFECT MATCH FOUND!")
-			break
+			if best_stats and best_distance < 0.0001:
+				print("PERFECT MATCH FOUND!")
+				break
 	
 	print("\n=== BEST MATCH FOUND ===")
 	print(f"Seed: {best_seed[:60]}...")
@@ -472,6 +637,14 @@ if __name__ == "__main__":
 		use_gpu = "--gpu" in sys.argv or "-g" in sys.argv
 		use_enclave = "--enclave" in sys.argv or "-e" in sys.argv
 		
+		# Parse thread count
+		num_threads = None
+		for arg in sys.argv:
+			if arg.startswith("--threads="):
+				num_threads = int(arg.split("=")[1])
+			elif arg == "-t" and sys.argv.index(arg) + 1 < len(sys.argv):
+				num_threads = int(sys.argv[sys.argv.index(arg) + 1])
+		
 		search_hash(
 			target_symmetry=1.0,
 			target_efficiency=1.0,
@@ -479,7 +652,8 @@ if __name__ == "__main__":
 			target_order=1.0,
 			max_iterations=1000000,
 			use_gpu=use_gpu,
-			use_enclave=use_enclave
+			use_enclave=use_enclave,
+			num_threads=num_threads
 		)
 	else:
 		# Normal chain mode

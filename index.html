@@ -320,6 +320,12 @@
         </div>
 
         <div class="results" id="results"></div>
+        
+        <!-- Closest Match Display -->
+        <div class="block-display" id="closest-match" style="display: none; border-color: #ffd700; background: rgba(255, 215, 0, 0.1);">
+            <div class="block-header" style="color: #ffd700;">🏆 CLOSEST MATCH FOUND SO FAR</div>
+            <div id="closest-match-content"></div>
+        </div>
     </div>
 
     <script>
@@ -671,60 +677,231 @@
         let currentSearchInterval = null;
         let lastAlertDistance = Infinity;
         let matchCount = 0;
+        let workers = [];
+        let workerResults = [];
+        let activeWorkers = 0; // Track active workers globally
         const ALERT_THRESHOLD = 0.01; // Alert when distance is below this
+        const PERFECT_MATCH_THRESHOLD = 0.000001; // Stop only when distance is below this (100% match)
+        const NUM_WORKERS = navigator.hardwareConcurrency || 4; // Use CPU cores for workers
 
         function stopSearch() {
+            // Stop interval
             if (currentSearchInterval) {
                 clearInterval(currentSearchInterval);
                 currentSearchInterval = null;
-                document.getElementById('status').textContent = 'Search stopped by user.';
-                document.getElementById('search-button').style.display = 'inline-block';
-                document.getElementById('stop-button').style.display = 'none';
             }
+            
+            // Terminate all workers
+            workers.forEach(worker => {
+                worker.terminate();
+            });
+            workers = [];
+            workerResults = [];
+            
+            document.getElementById('status').textContent = 'Search stopped by user.';
+            document.getElementById('search-button').style.display = 'inline-block';
+            document.getElementById('stop-button').style.display = 'none';
         }
 
-        function showMatchAlert(distance, stats, iteration) {
-            // Show browser alert
-            alert(`🎯 MATCH FOUND! (Match #${matchCount})\n\n` +
+        function createWorkers(numWorkers) {
+            // Worker code as string (inline to avoid file loading issues)
+            const workerCode = `
+                // Hash functions
+                async function sha256Hash(data) {
+                    const encoder = new TextEncoder();
+                    const dataBuffer = encoder.encode(data);
+                    const hashBuffer = await crypto.subtle.digest('SHA-256', dataBuffer);
+                    const hashArray = Array.from(new Uint8Array(hashBuffer));
+                    return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+                }
+
+                function palindromicHash(hexHash) {
+                    const half = hexHash.substring(0, Math.floor(hexHash.length / 2));
+                    return half + half.split('').reverse().join('');
+                }
+
+                function shannonEntropy(s) {
+                    const counts = {};
+                    for (let char of s) {
+                        counts[char] = (counts[char] || 0) + 1;
+                    }
+                    let entropy = 0;
+                    const total = s.length;
+                    for (let count of Object.values(counts)) {
+                        const p = count / total;
+                        entropy -= p * Math.log2(p);
+                    }
+                    return entropy;
+                }
+
+                function idealEntropy(s) {
+                    const alphabet = new Set(s).size;
+                    if (alphabet <= 1) return 0;
+                    return Math.log2(alphabet);
+                }
+
+                function symmetryScore(s) {
+                    let matches = 0;
+                    const half = Math.floor(s.length / 2);
+                    for (let i = 0; i < half; i++) {
+                        if (s[i] === s[s.length - 1 - i]) {
+                            matches++;
+                        }
+                    }
+                    return matches / half;
+                }
+
+                function demonEntropyMeter(s) {
+                    const H_real = shannonEntropy(s);
+                    const H_ideal = idealEntropy(s);
+                    const symmetry = symmetryScore(s);
+                    const entropy_saved = Math.max(0, H_ideal - H_real);
+                    const efficiency = H_ideal > 0 ? entropy_saved / H_ideal : 0;
+                    const disorder_ratio = H_ideal > 0 ? H_real / H_ideal : 0;
+                    const order_extracted = 1 - disorder_ratio;
+                    return {
+                        real_entropy: H_real,
+                        ideal_entropy: H_ideal,
+                        entropy_saved: entropy_saved,
+                        symmetry_score: symmetry,
+                        demon_efficiency: efficiency,
+                        disorder_level: disorder_ratio,
+                        order_extracted: order_extracted
+                    };
+                }
+
+                function calculateDistance(stats, targets) {
+                    const symDiff = Math.abs(stats.symmetry_score - targets.symmetry);
+                    const effDiff = Math.abs(stats.demon_efficiency - targets.efficiency);
+                    const disDiff = Math.abs(stats.disorder_level - targets.disorder);
+                    const ordDiff = Math.abs(stats.order_extracted - targets.order);
+                    return symDiff + effDiff + disDiff + ordDiff;
+                }
+
+                // Listen for messages from main thread
+                self.addEventListener('message', async function(e) {
+                    const { seeds, targets, workerId } = e.data;
+                    const results = [];
+                    for (const seed of seeds) {
+                        try {
+                            const hash = await sha256Hash(seed);
+                            const palHash = palindromicHash(hash);
+                            const stats = demonEntropyMeter(palHash);
+                            const distance = calculateDistance(stats, targets);
+                            results.push({
+                                seed: seed,
+                                hash: palHash,
+                                stats: stats,
+                                distance: distance
+                            });
+                        } catch (error) {
+                            console.error('Worker processing error:', error);
+                        }
+                    }
+                    // Send results back to main thread
+                    self.postMessage({
+                        workerId: workerId,
+                        results: results
+                    });
+                });
+            `;
+            
+            const newWorkers = [];
+            for (let i = 0; i < numWorkers; i++) {
+                try {
+                    // Create worker from Blob URL (works without server)
+                    const blob = new Blob([workerCode], { type: 'application/javascript' });
+                    const workerUrl = URL.createObjectURL(blob);
+                    const worker = new Worker(workerUrl);
+                    
+                    worker.onmessage = function(e) {
+                        const { workerId, results } = e.data;
+                        // Store results
+                        workerResults.push(...results);
+                        // Decrement active workers when batch completes
+                        activeWorkers = Math.max(0, activeWorkers - 1);
+                    };
+                    worker.onerror = function(error) {
+                        console.error(`Worker ${i} error:`, error);
+                        console.error('Error details:', error.message, error.filename, error.lineno);
+                        activeWorkers = Math.max(0, activeWorkers - 1);
+                    };
+                    newWorkers.push(worker);
+                } catch (error) {
+                    console.warn(`Failed to create worker ${i}:`, error);
+                }
+            }
+            return newWorkers;
+        }
+
+        function isPerfectMatch(stats, targets, threshold = PERFECT_MATCH_THRESHOLD) {
+            // Check if all metrics are exactly 1.0 (within threshold)
+            const symMatch = Math.abs(stats.symmetry_score - targets.symmetry) <= threshold;
+            const effMatch = Math.abs(stats.demon_efficiency - targets.efficiency) <= threshold;
+            const disMatch = Math.abs(stats.disorder_level - targets.disorder) <= threshold;
+            const ordMatch = Math.abs(stats.order_extracted - targets.order) <= threshold;
+            return symMatch && effMatch && disMatch && ordMatch;
+        }
+
+        function showMatchAlert(distance, stats, iteration, isPerfect = false) {
+            const title = isPerfect ? '🎯 100% PERFECT MATCH FOUND!' : `🎯 MATCH FOUND! (Match #${matchCount})`;
+            const message = isPerfect 
+                ? `🎯 100% PERFECT MATCH FOUND!\n\n` +
+                  `Iteration: ${iteration.toLocaleString()}\n` +
+                  `Distance: ${distance.toFixed(10)}\n\n` +
+                  `Symmetry: ${stats.symmetry_score.toFixed(10)} = 1.0 ✓\n` +
+                  `Efficiency: ${stats.demon_efficiency.toFixed(10)} = 1.0 ✓\n` +
+                  `Disorder: ${stats.disorder_level.toFixed(10)} = 1.0 ✓\n` +
+                  `Order: ${stats.order_extracted.toFixed(10)} = 1.0 ✓\n\n` +
+                  `SEARCH COMPLETE!`
+                : `🎯 MATCH FOUND! (Match #${matchCount})\n\n` +
                   `Iteration: ${iteration.toLocaleString()}\n` +
                   `Distance: ${distance.toFixed(6)}\n\n` +
                   `Symmetry: ${stats.symmetry_score.toFixed(6)}\n` +
                   `Efficiency: ${stats.demon_efficiency.toFixed(6)}\n` +
                   `Disorder: ${stats.disorder_level.toFixed(6)}\n` +
                   `Order: ${stats.order_extracted.toFixed(6)}\n\n` +
-                  `Search will continue...`);
+                  `Search will continue...`;
+            
+            // Show browser alert
+            alert(message);
             
             // Also show visual notification
             const notification = document.createElement('div');
+            const bgColor = isPerfect ? 'rgba(255, 215, 0, 0.95)' : 'rgba(0, 255, 0, 0.9)';
+            const borderColor = isPerfect ? '#ffd700' : '#00ff00';
+            const textColor = isPerfect ? '#000' : '#000';
+            
             notification.style.cssText = `
                 position: fixed;
                 top: 20px;
                 right: 20px;
-                background: rgba(0, 255, 0, 0.9);
-                color: #000;
+                background: ${bgColor};
+                color: ${textColor};
                 padding: 20px;
-                border: 3px solid #00ff00;
+                border: 3px solid ${borderColor};
                 border-radius: 5px;
                 z-index: 10000;
                 font-family: 'Courier New', monospace;
                 font-weight: bold;
-                box-shadow: 0 0 30px rgba(0, 255, 0, 0.8);
+                box-shadow: 0 0 30px ${isPerfect ? 'rgba(255, 215, 0, 0.8)' : 'rgba(0, 255, 0, 0.8)'};
                 animation: slideIn 0.5s ease-out, pulseNotification 2s infinite 0.5s;
                 max-width: 300px;
             `;
             notification.innerHTML = `
-                <div style="font-size: 1.2em; margin-bottom: 10px;">🎯 MATCH #${matchCount} FOUND!</div>
-                <div>Distance: ${distance.toFixed(6)}</div>
+                <div style="font-size: 1.2em; margin-bottom: 10px;">${title}</div>
+                <div>Distance: ${distance.toFixed(isPerfect ? 10 : 6)}</div>
                 <div>Iteration: ${iteration.toLocaleString()}</div>
+                ${isPerfect ? '<div style="margin-top: 10px; font-size: 1.1em;">✓ ALL METRICS = 1.0</div>' : ''}
             `;
             document.body.appendChild(notification);
             
-            // Remove notification after 5 seconds
+            // Remove notification after longer time if perfect match
             setTimeout(() => {
                 if (notification.parentNode) {
                     notification.parentNode.removeChild(notification);
                 }
-            }, 5000);
+            }, isPerfect ? 10000 : 5000);
         }
 
         async function startSearch() {
@@ -749,12 +926,24 @@
             if (currentSearchInterval) {
                 clearInterval(currentSearchInterval);
             }
+            
+            // Terminate existing workers
+            workers.forEach(worker => worker.terminate());
+            workers = [];
+            workerResults = [];
+
+            // Create Web Workers for multi-threading
+            const numWorkers = NUM_WORKERS;
+            workers = createWorkers(numWorkers);
+            const useWorkers = workers.length > 0;
 
             // Update UI
             document.getElementById('search-button').style.display = 'none';
             document.getElementById('stop-button').style.display = 'inline-block';
             resultsDiv.innerHTML = '<div class="loading">SEARCHING... SCANNING HASH SPACE...</div>';
-            statusDiv.textContent = `Searching for optimal hash... [GPU: ${gpuEnabled ? 'ENABLED' : 'CPU FALLBACK'}] [Enclave: ${secureContext?.initialized ? 'ACTIVE' : 'INACTIVE'}]`;
+            
+            const workerStatus = useWorkers ? `[${numWorkers} WORKERS]` : '';
+            statusDiv.textContent = `Searching for optimal hash... ${workerStatus} [GPU: ${gpuEnabled ? 'ENABLED' : 'CPU FALLBACK'}] [Enclave: ${secureContext?.initialized ? 'ACTIVE' : 'INACTIVE'}]`;
 
             let bestHash = null;
             let bestDistance = Infinity;
@@ -762,22 +951,109 @@
             let iterations = 0;
             lastAlertDistance = Infinity; // Reset alert threshold
             matchCount = 0; // Reset match counter
-            const batchSize = gpuEnabled ? 64 : 1; // Use batches if GPU is available
+            activeWorkers = 0; // Reset active workers counter
+            const batchSize = gpuEnabled ? 64 : (useWorkers ? 32 : 1); // Use batches if GPU or workers available
             let seedBatch = [];
+
+            // Process worker results
+            function processWorkerResults() {
+                if (workerResults.length === 0) return;
+                
+                const results = workerResults.splice(0); // Get and clear results
+                
+                for (const result of results) {
+                    iterations++;
+                    const { seed, hash: palHash, stats, distance } = result;
+                    
+                    if (distance < bestDistance) {
+                        bestDistance = distance;
+                        bestHash = palHash;
+                        bestStats = stats;
+                        
+                        const mode = useWorkers ? `[${NUM_WORKERS} WORKERS]` : (gpuEnabled ? '[GPU ACCELERATED]' : '');
+                        statusDiv.textContent = `Iteration ${iterations.toLocaleString()} | Best distance: ${bestDistance.toFixed(6)} | Matches: ${matchCount} ${mode}`;
+                        
+                        // Always display the closest match found
+                        displayBlock({
+                            seed: seed,
+                            pal_hash: bestHash,
+                            ...bestStats
+                        }, iterations);
+                        
+                        // Print closest match to console
+                        console.log(`\n🎯 CLOSEST MATCH YET (Iteration ${iterations.toLocaleString()}):`);
+                        console.log(`   Distance: ${bestDistance.toFixed(10)}`);
+                        console.log(`   Symmetry: ${bestStats.symmetry_score.toFixed(10)} (target: 1.0)`);
+                        console.log(`   Efficiency: ${bestStats.demon_efficiency.toFixed(10)} (target: 1.0)`);
+                        console.log(`   Disorder: ${bestStats.disorder_level.toFixed(10)} (target: 1.0)`);
+                        console.log(`   Order: ${bestStats.order_extracted.toFixed(10)} (target: 1.0)`);
+                        console.log(`   Hash: ${bestHash}`);
+                        console.log(`   Seed: ${seed.substring(0, 60)}...`);
+
+                        // Check for perfect match (100%)
+                        const perfect = isPerfectMatch(bestStats, targets);
+                        if (perfect) {
+                            // PERFECT MATCH FOUND - STOP SEARCH
+                            stopSearch();
+                            matchCount++;
+                            statusDiv.textContent = `🎯 100% PERFECT MATCH FOUND after ${iterations.toLocaleString()} iterations! SEARCH COMPLETE!`;
+                            showMatchAlert(bestDistance, bestStats, iterations, true);
+                            return true; // Signal to stop
+                        }
+
+                        // Alert if we found a good match (and haven't alerted for this distance yet)
+                        if (bestDistance < ALERT_THRESHOLD && bestDistance < lastAlertDistance) {
+                            matchCount++;
+                            showMatchAlert(bestDistance, bestStats, iterations, false);
+                            lastAlertDistance = bestDistance;
+                        }
+                    }
+                }
+                return false;
+            }
 
             currentSearchInterval = setInterval(async () => {
                 // Check if search was stopped
                 if (!currentSearchInterval) {
                     return;
                 }
-                iterations++;
                 
-                // Generate random seed
-                const seed = `SEED-${Date.now()}-${Math.random()}-${iterations}`;
-                seedBatch.push(seed);
+                // Process worker results first
+                if (useWorkers && workerResults.length > 0) {
+                    if (processWorkerResults()) {
+                        return; // Perfect match found, stop
+                    }
+                }
                 
-                // Process in batches if GPU is enabled
-                if (gpuEnabled && seedBatch.length >= batchSize) {
+                // Generate seeds and distribute to workers
+                if (useWorkers && activeWorkers < workers.length) {
+                    // Distribute work to available workers
+                    const seedsPerWorker = Math.max(1, Math.floor(batchSize / workers.length));
+                    for (let i = 0; i < workers.length && activeWorkers < workers.length; i++) {
+                        const worker = workers[i];
+                        const seeds = [];
+                        for (let j = 0; j < seedsPerWorker; j++) {
+                            seeds.push(`SEED-${Date.now()}-${Math.random()}-${iterations + j}`);
+                        }
+                        
+                        if (seeds.length > 0) {
+                            activeWorkers++;
+                            worker.postMessage({
+                                seeds: seeds,
+                                targets: targets,
+                                workerId: i
+                            });
+                        }
+                    }
+                } else if (!useWorkers) {
+                    // Fallback to single-threaded processing
+                    iterations++;
+                    const seed = `SEED-${Date.now()}-${Math.random()}-${iterations}`;
+                    seedBatch.push(seed);
+                }
+                
+                // Process in batches if GPU is enabled (and not using workers)
+                if (gpuEnabled && !useWorkers && seedBatch.length >= batchSize) {
                     const hashes = await gpuBatchHash(seedBatch);
                     seedBatch = [];
                     
@@ -793,27 +1069,56 @@
                             
                             statusDiv.textContent = `Iteration ${iterations.toLocaleString()} | Best distance: ${bestDistance.toFixed(6)} | Matches: ${matchCount} [GPU ACCELERATED]`;
                             
-                            displayBlock({
+                            // Always display the closest match found
+                            const blockDataGPU = {
                                 seed: seed,
                                 pal_hash: bestHash,
                                 ...bestStats
-                            }, iterations);
+                            };
+                            displayBlock(blockDataGPU, iterations);
+                            displayClosestMatch(blockDataGPU, iterations, bestDistance);
+                            
+                            // Print closest match to console
+                            console.log(`\n🎯 CLOSEST MATCH YET (Iteration ${iterations.toLocaleString()}):`);
+                            console.log(`   Distance: ${bestDistance.toFixed(10)}`);
+                            console.log(`   Symmetry: ${bestStats.symmetry_score.toFixed(10)} (target: 1.0)`);
+                            console.log(`   Efficiency: ${bestStats.demon_efficiency.toFixed(10)} (target: 1.0)`);
+                            console.log(`   Disorder: ${bestStats.disorder_level.toFixed(10)} (target: 1.0)`);
+                            console.log(`   Order: ${bestStats.order_extracted.toFixed(10)} (target: 1.0)`);
+                            console.log(`   Hash: ${bestHash}`);
+                            console.log(`   Seed: ${seed.substring(0, 60)}...`);
+
+                            // Check for perfect match (100%)
+                            const perfect = isPerfectMatch(bestStats, targets);
+                            if (perfect) {
+                                // PERFECT MATCH FOUND - STOP SEARCH
+                                clearInterval(currentSearchInterval);
+                                currentSearchInterval = null;
+                                matchCount++;
+                                statusDiv.textContent = `🎯 100% PERFECT MATCH FOUND after ${iterations.toLocaleString()} iterations! SEARCH COMPLETE!`;
+                                showMatchAlert(bestDistance, bestStats, iterations, true);
+                                document.getElementById('search-button').style.display = 'inline-block';
+                                document.getElementById('stop-button').style.display = 'none';
+                                return; // Exit the interval function
+                            }
 
                             // Alert if we found a good match (and haven't alerted for this distance yet)
                             if (bestDistance < ALERT_THRESHOLD && bestDistance < lastAlertDistance) {
                                 matchCount++;
-                                showMatchAlert(bestDistance, bestStats, iterations);
+                                showMatchAlert(bestDistance, bestStats, iterations, false);
                                 lastAlertDistance = bestDistance;
                             }
                         }
                     }
-                } else {
+                } else if (!useWorkers) {
                     // Single hash computation (CPU or waiting for batch)
-                    const hash = await secureHash(seed);
-                    const palHash = palindromicHash(hash);
-                    const stats = demonEntropyMeter(palHash);
-                    const distance = calculateDistance(stats, targets);
-                    
+                    const seed = seedBatch.shift();
+                    if (seed) {
+                        const hash = await secureHash(seed);
+                        const palHash = palindromicHash(hash);
+                        const stats = demonEntropyMeter(palHash);
+                        const distance = calculateDistance(stats, targets);
+                        
                     if (distance < bestDistance) {
                         bestDistance = distance;
                         bestHash = palHash;
@@ -822,24 +1127,115 @@
                         const mode = secureContext?.initialized ? '[SECURE ENCLAVE]' : '';
                         statusDiv.textContent = `Iteration ${iterations.toLocaleString()} | Best distance: ${bestDistance.toFixed(6)} | Matches: ${matchCount} ${mode}`;
                         
-                        displayBlock({
+                        // Always display the closest match found
+                        const blockDataCPU = {
                             seed: seed,
                             pal_hash: bestHash,
                             ...bestStats
-                        }, iterations);
+                        };
+                        displayBlock(blockDataCPU, iterations);
+                        displayClosestMatch(blockDataCPU, iterations, bestDistance);
+                        
+                        // Print closest match to console
+                        console.log(`\n🎯 CLOSEST MATCH YET (Iteration ${iterations.toLocaleString()}):`);
+                        console.log(`   Distance: ${bestDistance.toFixed(10)}`);
+                        console.log(`   Symmetry: ${bestStats.symmetry_score.toFixed(10)} (target: 1.0)`);
+                        console.log(`   Efficiency: ${bestStats.demon_efficiency.toFixed(10)} (target: 1.0)`);
+                        console.log(`   Disorder: ${bestStats.disorder_level.toFixed(10)} (target: 1.0)`);
+                        console.log(`   Order: ${bestStats.order_extracted.toFixed(10)} (target: 1.0)`);
+                        console.log(`   Hash: ${bestHash}`);
+                        console.log(`   Seed: ${seed.substring(0, 60)}...`);
 
-                        // Alert if we found a good match (and haven't alerted for this distance yet)
-                        if (bestDistance < ALERT_THRESHOLD && bestDistance < lastAlertDistance) {
-                            matchCount++;
-                            showMatchAlert(bestDistance, bestStats, iterations);
-                            lastAlertDistance = bestDistance;
+                        // Check for perfect match (100%)
+                            const perfect = isPerfectMatch(bestStats, targets);
+                            if (perfect) {
+                                // PERFECT MATCH FOUND - STOP SEARCH
+                                stopSearch();
+                                matchCount++;
+                                statusDiv.textContent = `🎯 100% PERFECT MATCH FOUND after ${iterations.toLocaleString()} iterations! SEARCH COMPLETE!`;
+                                showMatchAlert(bestDistance, bestStats, iterations, true);
+                                return; // Exit the interval function
+                            }
+
+                            // Alert if we found a good match (and haven't alerted for this distance yet)
+                            if (bestDistance < ALERT_THRESHOLD && bestDistance < lastAlertDistance) {
+                                matchCount++;
+                                showMatchAlert(bestDistance, bestStats, iterations, false);
+                                lastAlertDistance = bestDistance;
+                            }
                         }
                     }
                 }
                 
-                // Continue forever - no stopping conditions
-                // Search will continue until manually stopped
-            }, gpuEnabled ? 1 : 10); // Faster with GPU
+                // Continue searching until perfect match (100%) is found
+                // Search will stop automatically when all metrics = 1.0
+            }, useWorkers ? 50 : (gpuEnabled ? 1 : 10)); // Check worker results periodically
+            
+        }
+
+        function displayClosestMatch(block, iteration, distance) {
+            const closestDiv = document.getElementById('closest-match');
+            const closestContent = document.getElementById('closest-match-content');
+            
+            if (!closestDiv || !closestContent) return;
+            
+            closestDiv.style.display = 'block';
+            
+            closestContent.innerHTML = `
+                <div class="block-info">
+                    <div class="info-item">
+                        <div class="info-label">Iteration:</div>
+                        <div class="info-value">${iteration.toLocaleString()}</div>
+                    </div>
+                    <div class="info-item">
+                        <div class="info-label">Distance:</div>
+                        <div class="info-value" style="color: #ffd700; font-weight: bold;">${distance.toFixed(10)}</div>
+                    </div>
+                    <div class="info-item">
+                        <div class="info-label">Seed:</div>
+                        <div class="info-value">${block.seed.substring(0, 60)}...</div>
+                    </div>
+                </div>
+                <div class="hash-display" style="border-color: #ffd700;">${block.pal_hash}</div>
+                <div class="metrics">
+                    <div class="metric">
+                        <div class="metric-label">
+                            <span class="metric-name">Symmetry Score</span>
+                            <span class="metric-value">${block.symmetry_score.toFixed(10)} / 1.0</span>
+                        </div>
+                        <div class="metric-bar-container">
+                            <div class="metric-bar" style="width: ${block.symmetry_score * 100}%; background: linear-gradient(90deg, #ffd700, #ffed4e);">${(block.symmetry_score * 100).toFixed(2)}%</div>
+                        </div>
+                    </div>
+                    <div class="metric">
+                        <div class="metric-label">
+                            <span class="metric-name">Demon Efficiency</span>
+                            <span class="metric-value">${block.demon_efficiency.toFixed(10)} / 1.0</span>
+                        </div>
+                        <div class="metric-bar-container">
+                            <div class="metric-bar" style="width: ${block.demon_efficiency * 100}%; background: linear-gradient(90deg, #ffd700, #ffed4e);">${(block.demon_efficiency * 100).toFixed(2)}%</div>
+                        </div>
+                    </div>
+                    <div class="metric">
+                        <div class="metric-label">
+                            <span class="metric-name">Disorder Level</span>
+                            <span class="metric-value">${block.disorder_level.toFixed(10)} / 1.0</span>
+                        </div>
+                        <div class="metric-bar-container">
+                            <div class="metric-bar" style="width: ${block.disorder_level * 100}%; background: linear-gradient(90deg, #ffd700, #ffed4e);">${(block.disorder_level * 100).toFixed(2)}%</div>
+                        </div>
+                    </div>
+                    <div class="metric">
+                        <div class="metric-label">
+                            <span class="metric-name">Order Extracted</span>
+                            <span class="metric-value">${block.order_extracted.toFixed(10)} / 1.0</span>
+                        </div>
+                        <div class="metric-bar-container">
+                            <div class="metric-bar" style="width: ${block.order_extracted * 100}%; background: linear-gradient(90deg, #ffd700, #ffed4e);">${(block.order_extracted * 100).toFixed(2)}%</div>
+                        </div>
+                    </div>
+                </div>
+            `;
         }
 
         function displayBlock(block, iteration) {
